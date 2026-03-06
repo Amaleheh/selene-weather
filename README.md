@@ -1,54 +1,49 @@
-# SELENE WEATHER
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡤⠄⠤⠤⠤⠄⡀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⢀⡤⠤⠤⠄⡄⡀⡀⠀⠀⠀⡎⠀⠀⠀⠀⠀⠀⠀⠉⠑⢄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⡤⠃⠀⠀⠀⠀⠀⠀⠉⠳⡄⢀⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠱⡄⡠⠎⠉⠉⠉⠉⠓⢦⡀⠀⠀⠀
+⠀⠀⠀⠀⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⠀⠀⠀⠀⠀⡇⠀⠀⠀
+⠀⠀⠀⢸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡇⠀⠀⠀
+⠀⠀⠀⠸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡇⠀⠀⠀
+⠀⠀⠀⠨⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠾⢄⣀⡀⠀
+⠀⣠⠊⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⢦
+⡞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸
+⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡜
+⡃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡨⠁
+⠣⣀⡀⠀⠀⠀⠀⠀⠀⢀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠰⡦⣄⣀⣀⡀⡀⡠⠐⠊⠀⠀
+⠀⠀⠈⠉⠁⠑⠂⠂⠒⠁⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡰⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠢⢄⡀⣀⡀⣀⠀⠀⠀⠀⠀⠀⠀⠀⢀⢀⠠⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠈⠀⠁⠁⠁⠈⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-```text
-      .   * .       .
-   * .         * .
-            _________
-         /   ---     \
-        |    | |     |
-         \   ---    /
-          ---------
-       .               .
-   * .       * .
-
-```
-
-**SELENE WEATHER** is a minimalist weather utility built with a focus on essential data and clean aesthetics. This project was developed as a functional exercise in modern Android development and API consumption.
-
----
-
-### PROJECT OVERVIEW
-
-This application serves as a practical implementation of my journey learning Kotlin. It prioritizes a distraction-free user interface while providing real-time meteorological data.
-
-### OBJECTIVES
-
-* **Android Development:** Mastering the fundamentals of the Android lifecycle and component architecture.
-* **API Integration:** Implementing robust networking layers to fetch and parse external data.
-* **UI Design:** Exploring "Less is More" principles through a retro-inspired, minimal interface.
+**Selene Weather** is a simple, clean weather app. I built this project to practice my coding skills and create something functional yet easy on the eyes.
 
 ---
 
-### TECHNICAL STACK
+### WHY I BUILT THIS
 
-* **Language:** Kotlin
-* **Networking:** Retrofit
-* **Data Source:** Open-Meteo API
-* **Architecture:** Clean / Minimalist
+I started this project to reach three main goals:
 
----
-
-### INSTALLATION
-
-1. Clone the repository.
-2. Open the project in Android Studio.
-3. Sync Gradle files.
-4. Build and run on an emulator or physical device.
+* **Learn Android:** Understanding how to build apps for mobile devices.
+* **Use APIs:** Learning how to pull real-time weather data into an app using Retrofit.
+* **Design:** Creating a user interface that is basic, retro, and easy to use.
 
 ---
 
-### LICENSE
+### HOW IT WORKS
 
-Distributed under the MIT License.
+The app connects to the **Open-Meteo API** to get current weather updates. It is written entirely in **Kotlin** and focuses on a "minimalist" style, meaning it only shows the information you actually need.
 
-Would you like me to write a sample `ApiService` interface in Kotlin to show how the Open-Meteo integration looks?
+---
+
+### TOOLS USED
+
+* **Kotlin** - The main programming language.
+* **Retrofit** - The tool used to grab weather data from the internet.
+* **Open-Meteo** - The service that provides the weather information.
+
+---
+
+### HOW TO RUN IT
+
+1. Download or clone this code.
+2. Open it in **Android Studio**.
+3. Press the **Run** button to see it on your phone or emulator.
