@@ -1,38 +1,54 @@
-# Selene Weather 🌙
+# SELENE WEATHER
 
-**Minimalist weather for a cluttered world.**
-
-Selene is a simple, "quiet" weather application designed to provide essential data without the noise. This is a **hobby project** built to explore clean UI/UX principles and efficient API integration.
-
----
-
-### ✨ Features
-
-* **Essential Data:** Only the temperature, conditions, and humidity.
-* **Minimalist UI:** Focus on whitespace and thin-stroke typography.
-* **Lightweight:** Fast loading with zero bloat.
-
-### 🛠 Tech Stack
-
-* **Framework:** [Your Framework, e.g., React]
-* **Styling:** Tailwind CSS
-* **Data:** OpenWeather API
-
-### 🚀 Quick Start
-
-```bash
-git clone https://github.com/yourusername/selene-weather.git
-cd selene-weather
-npm install
-npm start
+```text
+      .   * .       .
+   * .         * .
+            _________
+         /   ---     \
+        |    | |     |
+         \   ---    /
+          ---------
+       .               .
+   * .       * .
 
 ```
 
----
-
-> [!NOTE]
-> This is a **personal hobby project**. It is not intended for commercial use but serves as a playground for minimalist design experiments.
+**SELENE WEATHER** is a minimalist weather utility built with a focus on essential data and clean aesthetics. This project was developed as a functional exercise in modern Android development and API consumption.
 
 ---
 
-**Would you like me to generate an actual minimalist moon-themed logo for this project using Nano Banana 2?**
+### PROJECT OVERVIEW
+
+This application serves as a practical implementation of my journey learning Kotlin. It prioritizes a distraction-free user interface while providing real-time meteorological data.
+
+### OBJECTIVES
+
+* **Android Development:** Mastering the fundamentals of the Android lifecycle and component architecture.
+* **API Integration:** Implementing robust networking layers to fetch and parse external data.
+* **UI Design:** Exploring "Less is More" principles through a retro-inspired, minimal interface.
+
+---
+
+### TECHNICAL STACK
+
+* **Language:** Kotlin
+* **Networking:** Retrofit
+* **Data Source:** Open-Meteo API
+* **Architecture:** Clean / Minimalist
+
+---
+
+### INSTALLATION
+
+1. Clone the repository.
+2. Open the project in Android Studio.
+3. Sync Gradle files.
+4. Build and run on an emulator or physical device.
+
+---
+
+### LICENSE
+
+Distributed under the MIT License.
+
+Would you like me to write a sample `ApiService` interface in Kotlin to show how the Open-Meteo integration looks?
