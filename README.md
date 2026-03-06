@@ -47,3 +47,11 @@ The app connects to the **Open-Meteo API** to get current weather updates. It is
 1. Download or clone this code.
 2. Open it in **Android Studio**.
 3. Press the **Run** button to see it on your phone or emulator.
+
+### WHAT I WANT TO ADD IN FUTURE
+
+1.support for more apis like tomorrow.io
+weatherAPI and openweathermap
+2. ability to change the measurement units
+3. getting location permission fetching current user location automatically 
+4. more weather widgets
