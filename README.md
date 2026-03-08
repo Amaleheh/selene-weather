@@ -1,10 +1,14 @@
+
           .  .
        ( `   )  .
-      (  `  .  ) )
+      (  `  .  ) ).  SELENE WEATHER
        (___ ___)
          '  '  '
         '  '  '
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+<img width="1024" height="2284" alt="1000089101" src="https://github.com/user-attachments/assets/62947fa8-fd0e-4895-b767-6de56f674ecc" />
+<img width="1024" height="2284" alt="1000089100" src="https://github.com/user-attachments/assets/33423078-3564-494f-935f-e2a54c1ddbc4" />
+<img width="1024" height="2284" alt="1000089099" src="https://github.com/user-attachments/assets/6afc44ca-c725-42b3-aab3-83e28f5cc6a9" />
 
 **Selene Weather** is a simple, clean weather app. I built this project to practice my coding skills and create something functional yet easy on the eyes.
 
@@ -46,5 +50,4 @@ The app connects to the **Open-Meteo API** to get current weather updates. It is
 
 1. support for more apis like tomorrow.io ,weatherAPI and openweathermap.
 2. ability to change the measurement units.
-3. getting location permission fetching current user location automatically .
-4. more weather widgets.
+
