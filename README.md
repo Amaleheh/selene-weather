@@ -6,9 +6,12 @@
          '  '  '
         '  '  '
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-<img width="1024" height="2284" alt="1000089101" src="https://github.com/user-attachments/assets/62947fa8-fd0e-4895-b767-6de56f674ecc" />
-<img width="1024" height="2284" alt="1000089100" src="https://github.com/user-attachments/assets/33423078-3564-494f-935f-e2a54c1ddbc4" />
-<img width="1024" height="2284" alt="1000089099" src="https://github.com/user-attachments/assets/6afc44ca-c725-42b3-aab3-83e28f5cc6a9" />
+<div style="display: flex; overflow-x: auto; gap: 10px; padding-bottom: 10px;">
+  <img src="https://github.com/user-attachments/assets/33423078-3564-494f-935f-e2a54c1ddbc4" height="400" alt="1000089100" />
+  <img src="https://github.com/user-attachments/assets/6afc44ca-c725-42b3-aab3-83e28f5cc6a9" height="400" alt="1000089099" />
+  <img src="https://github.com/user-attachments/assets/62947fa8-fd0e-4895-b767-6de56f674ecc" height="400" alt="1000089101" />
+</div>
+
 
 **Selene Weather** is a simple, clean weather app. I built this project to practice my coding skills and create something functional yet easy on the eyes.
 
