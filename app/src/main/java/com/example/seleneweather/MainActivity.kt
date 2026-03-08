@@ -1,11 +1,22 @@
 package com.example.seleneweather
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.location.Location
+import android.location.LocationManager
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -15,11 +26,15 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,19 +45,29 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.seleneweather.ui.theme.SeleneWeatherTheme
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
+import com.google.android.gms.tasks.Task
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -52,33 +77,55 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.GET
 import retrofit2.http.Query
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.math.PI
 import kotlin.math.sin
 
 // ============================================================================
-// DATA STORE (City Persistence)
+// DATA STORE (City Persistence & Favorites)
 // ============================================================================
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
 class CityPreference(private val context: Context) {
     companion object {
-        val CITY_KEY = stringPreferencesKey("city_name")
-        const val DEFAULT_CITY = "London"
+        val LOCATION_ID_KEY = stringPreferencesKey("location_id_v6")
+        val FAVORITES_KEY = stringSetPreferencesKey("favorites_list_v6")
+        const val DEFAULT_LOCATION = "London|England|United Kingdom|51.50853|-0.12574"
     }
 
-    val cityFlow: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[CITY_KEY] ?: DEFAULT_CITY
+    val locationIdFlow: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[LOCATION_ID_KEY] ?: DEFAULT_LOCATION
     }
 
-    suspend fun saveCity(city: String) {
+    val favoritesFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        preferences[FAVORITES_KEY] ?: emptySet()
+    }
+
+    suspend fun saveLocation(locationId: String) {
         context.dataStore.edit { preferences ->
-            preferences[CITY_KEY] = city
+            preferences[LOCATION_ID_KEY] = locationId
+        }
+    }
+
+    suspend fun toggleFavorite(locationId: String) {
+        context.dataStore.edit { preferences ->
+            val current = preferences[FAVORITES_KEY] ?: emptySet()
+            if (current.contains(locationId)) {
+                preferences[FAVORITES_KEY] = current - locationId
+            } else {
+                preferences[FAVORITES_KEY] = current + locationId
+            }
         }
     }
 }
@@ -91,7 +138,8 @@ data class OpenMeteoResponse(
     val latitude: Double,
     val longitude: Double,
     val current: Current,
-    val hourly: Hourly
+    val hourly: Hourly,
+    val daily: Daily
 )
 
 data class Current(
@@ -102,13 +150,28 @@ data class Current(
     val relative_humidity_2m: Double,
     val wind_speed_10m: Double,
     val surface_pressure: Double,
-    val is_day: Int
+    val is_day: Int,
+    val uv_index: Double? = null,
+    val visibility: Double? = null
 )
 
 data class Hourly(
     val time: List<String>,
     val temperature_2m: List<Double>,
-    val weather_code: List<Int>
+    val weather_code: List<Int>,
+    val relative_humidity_2m: List<Double>? = null,
+    val wind_speed_10m: List<Double>? = null,
+    val is_day: List<Int>? = null
+)
+
+data class Daily(
+    val time: List<String>,
+    val weather_code: List<Int>,
+    val temperature_2m_max: List<Double>,
+    val temperature_2m_min: List<Double>,
+    val sunrise: List<String>,
+    val sunset: List<String>,
+    val uv_index_max: List<Double>? = null
 )
 
 data class GeocodeResponse(
@@ -121,12 +184,25 @@ data class GeocodeResult(
     val name: String,
     val country: String? = null,
     val admin1: String? = null
-)
+) {
+    val uniqueId: String get() = "$name|${admin1 ?: ""}|${country ?: ""}|$latitude|$longitude"
+}
 
 data class HourlyForecast(
     val time: String,
     val temp: Double,
-    val weatherCode: Int
+    val weatherCode: Int,
+    val isDay: Boolean,
+    val humidity: Int? = null,
+    val wind: Double? = null
+)
+
+data class DailyForecast(
+    val date: String,
+    val weatherCode: Int,
+    val maxTemp: Double,
+    val minTemp: Double,
+    val dayOfWeek: String
 )
 
 interface WeatherApi {
@@ -136,6 +212,7 @@ interface WeatherApi {
         @Query("longitude") longitude: String,
         @Query("current") current: String,
         @Query("hourly") hourly: String,
+        @Query("daily") daily: String,
         @Query("timezone") timezone: String,
         @Query("forecast_days") forecastDays: Int
     ): OpenMeteoResponse
@@ -182,11 +259,17 @@ sealed class WeatherUiState {
         val low: Double,
         val condition: String,
         val hourly: List<HourlyForecast>,
+        val daily: List<DailyForecast>,
         val humidity: Double,
         val windSpeed: Double,
         val pressure: Double,
         val isDay: Boolean,
-        val localTime: String
+        val localTime: String,
+        val lastUpdated: String,
+        val uvIndex: Double,
+        val visibility: Double,
+        val sunrise: String,
+        val sunset: String
     ) : WeatherUiState()
     data class Error(val message: String) : WeatherUiState()
 }
@@ -195,6 +278,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
     private val cityPreference = CityPreference(application)
     private val api = RetrofitClient.weatherApi
     private val geoApi = RetrofitClient.geocodeApi
+    private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(application)
 
     private val _uiState = MutableStateFlow<WeatherUiState>(WeatherUiState.Loading)
     val uiState: StateFlow<WeatherUiState> = _uiState.asStateFlow()
@@ -202,58 +286,257 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
     private val _searchSuggestions = MutableStateFlow<List<GeocodeResult>>(emptyList())
     val searchSuggestions: StateFlow<List<GeocodeResult>> = _searchSuggestions.asStateFlow()
 
+    private val _favorites = MutableStateFlow<Set<String>>(emptySet())
+    val favorites: StateFlow<Set<String>> = _favorites.asStateFlow()
+
+    private val _currentLocationName = MutableStateFlow("Loading...")
+    val currentLocationName: StateFlow<String> = _currentLocationName.asStateFlow()
+
+    private val _isLocating = MutableStateFlow(false)
+    val isLocating: StateFlow<Boolean> = _isLocating.asStateFlow()
+
     private var searchJob: Job? = null
 
     init {
-        loadWeather()
+        viewModelScope.launch {
+            cityPreference.favoritesFlow.collect { _favorites.value = it }
+        }
+        detectAndLoadLocation()
+    }
+
+    private fun detectAndLoadLocation() {
+        if (hasLocationPermission() && isLocationEnabled()) {
+            fetchCurrentLocationWeather()
+        } else {
+            loadWeather()
+        }
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val context = getApplication<Application>()
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun isLocationEnabled(): Boolean {
+        val context = getApplication<Application>()
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+               locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    }
+
+    fun showLocationDisabledError() {
+        _uiState.value = WeatherUiState.Error("Location services are off. Please enable them in settings to use your current location.")
+    }
+
+    @SuppressLint("MissingPermission")
+    fun fetchCurrentLocationWeather() {
+        viewModelScope.launch {
+            _isLocating.value = true
+            _uiState.value = WeatherUiState.Loading
+            try {
+                if (!isLocationEnabled()) {
+                    showLocationDisabledError()
+                    return@launch
+                }
+
+                val location = getLocation()
+                if (location != null) {
+                    val cityName = getCityNameFromCoordinates(location.latitude, location.longitude)
+                    updateWeatherByCoordinates(location.latitude, location.longitude, cityName)
+                } else {
+                    _uiState.value = WeatherUiState.Error("Unable to fetch your current location. Please try again.")
+                }
+            } catch (e: Exception) {
+                _uiState.value = WeatherUiState.Error("Error: ${e.localizedMessage ?: "Failed to get location"}")
+            } finally {
+                _isLocating.value = false
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun getLocation(): Location? = withContext(Dispatchers.IO) {
+        val context = getApplication<Application>()
+        
+        // 1. Try Google Play Services (Fused Location) if available
+        if (isGooglePlayServicesAvailable(context)) {
+            try {
+                val cancellationTokenSource = CancellationTokenSource()
+                val gmsLocation = fusedLocationClient.getCurrentLocation(
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    cancellationTokenSource.token
+                ).await()
+                if (gmsLocation != null) return@withContext gmsLocation
+            } catch (e: Exception) {
+                // Fallback to LocationManager
+            }
+        }
+
+        // 2. Fallback to Android System LocationManager (Non-GMS compliant)
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        
+        // Try getting fresh location on API 30+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val location = suspendCancellableCoroutine<Location?> { continuation ->
+                    locationManager.getCurrentLocation(
+                        LocationManager.NETWORK_PROVIDER,
+                        null,
+                        ContextCompat.getMainExecutor(context),
+                        { continuation.resume(it) }
+                    )
+                }
+                if (location != null) return@withContext location
+            } catch (e: Exception) {}
+        }
+
+        // Try last known location
+        val providers = locationManager.getProviders(true)
+        var bestLocation: Location? = null
+        for (provider in providers) {
+            val l = locationManager.getLastKnownLocation(provider) ?: continue
+            if (bestLocation == null || l.accuracy < bestLocation.accuracy) {
+                bestLocation = l
+            }
+        }
+        bestLocation
+    }
+
+    private fun isGooglePlayServicesAvailable(context: Context): Boolean {
+        val availability = GoogleApiAvailability.getInstance()
+        val resultCode = availability.isGooglePlayServicesAvailable(context)
+        return resultCode == ConnectionResult.SUCCESS
+    }
+
+    private suspend fun getCityNameFromCoordinates(lat: Double, lon: Double): String = withContext(Dispatchers.IO) {
+        try {
+            val geocoder = Geocoder(getApplication(), Locale.getDefault())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val addresses = suspendCancellableCoroutine<List<android.location.Address>?> { continuation ->
+                    geocoder.getFromLocation(lat, lon, 1) { addresses ->
+                        continuation.resume(addresses)
+                    }
+                }
+                addresses?.firstOrNull()?.let {
+                    return@withContext it.locality ?: it.subAdminArea ?: it.adminArea ?: it.countryName ?: "Current Location"
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val addresses = geocoder.getFromLocation(lat, lon, 1)
+                addresses?.firstOrNull()?.let {
+                    return@withContext it.locality ?: it.subAdminArea ?: it.adminArea ?: it.countryName ?: "Current Location"
+                }
+            }
+            "Current Location"
+        } catch (e: Exception) {
+            "Current Location"
+        }
+    }
+
+    private fun updateWeatherByCoordinates(lat: Double, lon: Double, displayName: String) {
+        viewModelScope.launch {
+            _currentLocationName.value = displayName
+            fetchWeather(lat.toString(), lon.toString(), displayName)
+        }
     }
 
     fun loadWeather() {
         viewModelScope.launch {
             _uiState.value = WeatherUiState.Loading
             try {
-                val city = cityPreference.cityFlow.first()
-                val geoResult = geoApi.geocode(city, 10).results?.firstOrNull()
-                    ?: throw Exception("Location not found: $city")
+                val locationId = cityPreference.locationIdFlow.first()
+                val parts = locationId.split("|")
+                
+                val lat: String
+                val lon: String
+                val name: String
 
-                val weather = api.getWeather(
-                    latitude = String.format(Locale.US, "%.6f", geoResult.latitude),
-                    longitude = String.format(Locale.US, "%.6f", geoResult.longitude),
-                    current = "temperature_2m,apparent_temperature,weather_code,relative_humidity_2m,wind_speed_10m,surface_pressure,is_day",
-                    hourly = "temperature_2m,weather_code",
-                    timezone = "auto",
-                    forecastDays = 2
-                )
-
-                val hourlyForecasts = weather.hourly.time.take(24).mapIndexed { index, time ->
-                    HourlyForecast(
-                        time = if (time.length >= 16) time.substring(11, 16) else time,
-                        temp = weather.hourly.temperature_2m.getOrElse(index) { 0.0 },
-                        weatherCode = weather.hourly.weather_code.getOrElse(index) { 0 }
-                    )
+                if (parts.size >= 5) {
+                    name = parts[0]
+                    lat = parts[3]
+                    lon = parts[4]
+                } else {
+                    val geoResult = geoApi.geocode("London", 1).results?.firstOrNull()
+                        ?: throw Exception("Critical Error: Default location failed.")
+                    name = geoResult.name
+                    lat = geoResult.latitude.toString()
+                    lon = geoResult.longitude.toString()
+                    cityPreference.saveLocation(geoResult.uniqueId)
                 }
 
-                val todayTemps = weather.hourly.temperature_2m.take(24)
-                val high = if (todayTemps.isNotEmpty()) todayTemps.maxOrNull() ?: weather.current.temperature_2m else weather.current.temperature_2m
-                val low = if (todayTemps.isNotEmpty()) todayTemps.minOrNull() ?: weather.current.temperature_2m else weather.current.temperature_2m
-
-                _uiState.value = WeatherUiState.Success(
-                    city = geoResult.name,
-                    currentTemp = weather.current.temperature_2m,
-                    feelsLike = weather.current.apparent_temperature,
-                    high = high,
-                    low = low,
-                    condition = getWeatherCondition(weather.current.weather_code),
-                    hourly = hourlyForecasts,
-                    humidity = weather.current.relative_humidity_2m,
-                    windSpeed = weather.current.wind_speed_10m,
-                    pressure = weather.current.surface_pressure,
-                    isDay = weather.current.is_day == 1,
-                    localTime = weather.current.time
-                )
+                _currentLocationName.value = name
+                fetchWeather(lat, lon, name)
             } catch (e: Exception) {
-                _uiState.value = WeatherUiState.Error(e.message ?: "Network error. Please try again.")
+                _uiState.value = WeatherUiState.Error(e.message ?: "Failed to load weather data.")
             }
+        }
+    }
+
+    private suspend fun fetchWeather(lat: String, lon: String, name: String) {
+        try {
+            val weather = api.getWeather(
+                latitude = lat,
+                longitude = lon,
+                current = "temperature_2m,apparent_temperature,weather_code,relative_humidity_2m,wind_speed_10m,surface_pressure,is_day,uv_index,visibility",
+                hourly = "temperature_2m,weather_code,is_day,relative_humidity_2m,wind_speed_10m",
+                daily = "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max",
+                timezone = "auto",
+                forecastDays = 7
+            )
+
+            val hourlyForecasts = weather.hourly.time.take(24).mapIndexed { index, time ->
+                HourlyForecast(
+                    time = if (time.length >= 16) time.substring(11, 16) else time,
+                    temp = weather.hourly.temperature_2m.getOrElse(index) { 0.0 },
+                    weatherCode = weather.hourly.weather_code.getOrElse(index) { 0 },
+                    isDay = weather.hourly.is_day?.getOrElse(index) { 1 } == 1,
+                    humidity = weather.hourly.relative_humidity_2m?.getOrNull(index)?.toInt(),
+                    wind = weather.hourly.wind_speed_10m?.getOrNull(index)
+                )
+            }
+
+            val dailyForecasts = weather.daily.time.mapIndexed { index, time ->
+                val date = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(time) ?: Date()
+                val dayOfWeek = SimpleDateFormat("EEE", Locale.getDefault()).format(date)
+                DailyForecast(
+                    date = time,
+                    weatherCode = weather.daily.weather_code[index],
+                    maxTemp = weather.daily.temperature_2m_max[index],
+                    minTemp = weather.daily.temperature_2m_min[index],
+                    dayOfWeek = if (index == 0) "Today" else dayOfWeek
+                )
+            }
+
+            val high = weather.daily.temperature_2m_max.firstOrNull() ?: weather.current.temperature_2m
+            val low = weather.daily.temperature_2m_min.firstOrNull() ?: weather.current.temperature_2m
+
+            val lastUpdatedTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+
+            val sunriseTime = weather.daily.sunrise.firstOrNull()?.let { if (it.length >= 16) it.substring(11, 16) else it } ?: "--:--"
+            val sunsetTime = weather.daily.sunset.firstOrNull()?.let { if (it.length >= 16) it.substring(11, 16) else it } ?: "--:--"
+
+            _uiState.value = WeatherUiState.Success(
+                city = name,
+                currentTemp = weather.current.temperature_2m,
+                feelsLike = weather.current.apparent_temperature,
+                high = high,
+                low = low,
+                condition = getWeatherCondition(weather.current.weather_code),
+                hourly = hourlyForecasts,
+                daily = dailyForecasts,
+                humidity = weather.current.relative_humidity_2m,
+                windSpeed = weather.current.wind_speed_10m,
+                pressure = weather.current.surface_pressure,
+                isDay = weather.current.is_day == 1,
+                localTime = weather.current.time,
+                lastUpdated = "Last updated at $lastUpdatedTime",
+                uvIndex = weather.current.uv_index ?: 0.0,
+                visibility = (weather.current.visibility ?: 0.0) / 1000.0, // convert to km
+                sunrise = sunriseTime,
+                sunset = sunsetTime
+            )
+        } catch (e: Exception) {
+            _uiState.value = WeatherUiState.Error(e.message ?: "Failed to fetch weather data.")
         }
     }
 
@@ -264,7 +547,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         searchJob = viewModelScope.launch {
-            delay(400) // Debounce
+            delay(400)
             try {
                 val results = geoApi.geocode(query, 10).results ?: emptyList()
                 _searchSuggestions.value = results
@@ -274,12 +557,24 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun updateCity(city: String) {
+    fun updateCity(locationId: String) {
         viewModelScope.launch {
-            cityPreference.saveCity(city)
+            val name = locationId.split("|").firstOrNull() ?: "Loading..."
+            _currentLocationName.value = name
+            cityPreference.saveLocation(locationId)
             _searchSuggestions.value = emptyList()
             loadWeather()
         }
+    }
+
+    fun toggleFavorite(locationId: String) {
+        viewModelScope.launch {
+            cityPreference.toggleFavorite(locationId)
+        }
+    }
+
+    fun resetToDefault() {
+        updateCity(CityPreference.DEFAULT_LOCATION)
     }
 
     private fun getWeatherCondition(code: Int): String {
@@ -297,7 +592,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
 }
 
 // ============================================================================
-// ANIMATED BACKGROUNDS (Optimized Modern Simple Blurry)
+// ANIMATED BACKGROUNDS
 // ============================================================================
 
 @Composable
@@ -305,7 +600,6 @@ fun WeatherBackground(condition: String, isDay: Boolean, localTime: String) {
     val isDark = isSystemInDarkTheme()
     val backgroundColor = MaterialTheme.colorScheme.background
     
-    // Choose colors that are visible in both light and dark modes
     val primary = if (isDark) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.primary
     val secondary = if (isDark) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.secondary
 
@@ -316,31 +610,21 @@ fun WeatherBackground(condition: String, isDay: Boolean, localTime: String) {
                 val hour = timePart.substringBefore(':').toInt()
                 val minute = timePart.substringAfter(':').toInt()
                 val totalMinutes = hour * 60 + minute
-                
                 if (isDay) {
-                    // Map 6 AM (360) to 6 PM (1080)
                     ((totalMinutes - 360).toFloat() / 720f).coerceIn(0f, 1f)
                 } else {
-                    // Map 6 PM (1080) to 6 AM (360)
-                    if (totalMinutes >= 1080) {
-                        ((totalMinutes - 1080).toFloat() / 720f).coerceIn(0f, 1f)
-                    } else {
-                        ((totalMinutes + 1440 - 1080).toFloat() / 720f).coerceIn(0f, 1f)
-                    }
+                    if (totalMinutes >= 1080) ((totalMinutes - 1080).toFloat() / 720f).coerceIn(0f, 1f)
+                    else ((totalMinutes + 1440 - 1080).toFloat() / 720f).coerceIn(0f, 1f)
                 }
             } else 0.5f
-        } catch (e: Exception) {
-            0.5f
-        }
+        } catch (e: Exception) { 0.5f }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(backgroundColor)) {
-        // Celestial Body Background - positioned at top horizon, moves based on time
         CelestialBody(
             color = if (isDay) Color(0xFFFF9800) else Color(0xFF9FA8DA),
             progress = horizonProgress
         )
-
         when (condition) {
             "Partly Cloudy", "Foggy" -> ModernBlurryClouds(secondary)
             "Rainy", "Drizzle" -> ModernBlurryRain(primary)
@@ -348,18 +632,12 @@ fun WeatherBackground(condition: String, isDay: Boolean, localTime: String) {
             "Thunderstorm" -> ModernBlurryStorm(primary)
             else -> {}
         }
-        
-        // Gradient overlay for better UI contrast
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            backgroundColor.copy(alpha = 0.2f),
-                            backgroundColor.copy(alpha = 0.7f)
-                        )
+                        listOf(Color.Transparent, backgroundColor.copy(alpha = 0.2f), backgroundColor.copy(alpha = 0.7f))
                     )
                 )
         )
@@ -370,73 +648,23 @@ fun WeatherBackground(condition: String, isDay: Boolean, localTime: String) {
 fun CelestialBody(color: Color, progress: Float) {
     val isDark = isSystemInDarkTheme()
     val infiniteTransition = rememberInfiniteTransition(label = "celestial")
-    
-    // Core pulse - very subtle
-    val pulse by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.02f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(10000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse"
-    )
-
-    // Smooth movement transition between locations or time updates
-    val animatedProgress by animateFloatAsState(
-        targetValue = progress,
-        animationSpec = tween(durationMillis = 3000, easing = EaseInOutCubic),
-        label = "horizon_move"
-    )
+    val pulse by infiniteTransition.animateFloat(1f, 1.02f, animationSpec = infiniteRepeatable(tween(10000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse")
+    val animatedProgress by animateFloatAsState(progress, animationSpec = tween(3000, easing = EaseInOutCubic), label = "horizon")
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         val size = 180.dp
         val centerOffset = -(size / 2) 
-
-        // Wrap the celestial elements in a box that moves across the horizon
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    // Move across the horizon (roughly 80% of screen width)
-                    translationX = (animatedProgress - 0.5f) * this.size.width * 0.8f
-                },
+                .graphicsLayer { translationX = (animatedProgress - 0.5f) * this.size.width * 0.8f }, 
             contentAlignment = Alignment.TopCenter
         ) {
-            // Radiating light waves (Ripples)
             repeat(2) { i ->
-                val rippleProgress by infiniteTransition.animateFloat(
-                    initialValue = 0f,
-                    targetValue = 1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(12000, delayMillis = i * 6000, easing = LinearEasing),
-                        repeatMode = RepeatMode.Restart
-                    ),
-                    label = "ripple_$i"
-                )
-                
-                Box(
-                    modifier = Modifier
-                        .offset(y = centerOffset)
-                        .size(size + (200.dp * rippleProgress))
-                        .alpha(0.2f * (1f - rippleProgress))
-                        .background(color.copy(alpha = if (isDark) 0.1f else 0.2f), CircleShape)
-                        .blur(15.dp)
-                )
+                val rippleProgress by infiniteTransition.animateFloat(0f, 1f, animationSpec = infiniteRepeatable(tween(12000, delayMillis = i * 6000, easing = LinearEasing)), label = "ripple")
+                Box(modifier = Modifier.offset(y = centerOffset).size(size + (200.dp * rippleProgress)).alpha(0.7f * (1f - rippleProgress)).background(color.copy(alpha = if (isDark) 0.3f else 0.45f), CircleShape).blur(15.dp))
             }
-
-            // Core Sun/Moon - Perfectly round solid shape cut by top edge
-            Box(
-                modifier = Modifier
-                    .offset(y = centerOffset)
-                    .size(size)
-                    .graphicsLayer {
-                        scaleX = pulse
-                        scaleY = pulse
-                    }
-                    .background(color.copy(alpha = if (isDark) 0.4f else 0.6f), CircleShape)
-                    .blur(20.dp)
-            )
+            Box(modifier = Modifier.offset(y = centerOffset).size(size).graphicsLayer { scaleX = pulse; scaleY = pulse }.background(color.copy(alpha = if (isDark) 0.7f else 0.9f), CircleShape).blur(20.dp))
         }
     }
 }
@@ -445,70 +673,23 @@ fun CelestialBody(color: Color, progress: Float) {
 fun ModernBlurryClouds(color: Color) {
     val isDark = isSystemInDarkTheme()
     val infiniteTransition = rememberInfiniteTransition(label = "clouds")
-
     Box(modifier = Modifier.fillMaxSize()) {
         repeat(2) { i ->
-            // Use extremely long durations for very slow movement
             val duration = if (i == 0) 100000 else 140000
-            val delay = if (i == 0) 0 else 50000
-            
-            val xPos by infiniteTransition.animateFloat(
-                initialValue = -0.5f,
-                targetValue = 1.5f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(duration, delayMillis = delay, easing = LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                ),
-                label = "cloud_x_$i"
-            )
-
-            // Very subtle vertical drift using a separate animation
-            val yOffsetProgress by infiniteTransition.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(20000 + i * 10000, easing = LinearEasing),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "cloud_y_$i"
-            )
-            
+            val xPos by infiniteTransition.animateFloat(-0.5f, 1.5f, animationSpec = infiniteRepeatable(tween(duration, delayMillis = if (i == 0) 0 else 50000, easing = LinearEasing)), label = "x")
+            val yOffsetProgress by infiniteTransition.animateFloat(0f, 1f, animationSpec = infiniteRepeatable(tween(20000 + i * 10000, easing = LinearEasing), RepeatMode.Reverse), label = "y")
             val yBase = if (i == 0) 160.dp else 220.dp
             val yDrift = (sin(yOffsetProgress * PI.toFloat() * 2) * 15).dp
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = xPos * size.width
-                        translationY = yBase.toPx() + yDrift.toPx()
-                    }
-            ) {
-                // Layered cloud: 3 overlapping blobs for a more "cloud-like" shape
+            Box(modifier = Modifier.fillMaxSize().graphicsLayer { translationX = xPos * size.width; translationY = yBase.toPx() + yDrift.toPx() }) {
                 val baseSize = if (i == 0) 180.dp else 140.dp
-                val alpha = if (isDark) 0.12f else 0.25f
-                
-                Box(
-                    modifier = Modifier
-                        .offset(x = 0.dp, y = 15.dp)
-                        .size(baseSize)
-                        .background(color.copy(alpha = alpha), CircleShape)
-                        .blur(40.dp)
-                )
-                Box(
-                    modifier = Modifier
-                        .offset(x = baseSize * 0.4f, y = 0.dp)
-                        .size(baseSize * 1.2f)
-                        .background(color.copy(alpha = alpha), CircleShape)
-                        .blur(40.dp)
-                )
-                Box(
-                    modifier = Modifier
-                        .offset(x = baseSize * 0.9f, y = 20.dp)
-                        .size(baseSize * 0.8f)
-                        .background(color.copy(alpha = alpha), CircleShape)
-                        .blur(40.dp)
-                )
+                val alphaValue = if (isDark) 0.45f else 0.65f 
+                repeat(2) { waveIdx ->
+                    val waveProgress by infiniteTransition.animateFloat(0f, 1f, animationSpec = infiniteRepeatable(tween(15000, delayMillis = waveIdx * 7500, easing = LinearEasing)), label = "wave")
+                    Box(modifier = Modifier.offset(x = baseSize * 0.2f, y = 10.dp).size(baseSize * (1.2f + 0.5f * waveProgress)).alpha(0.5f * (1f - waveProgress)).background(color.copy(alpha = alphaValue * 0.4f), CircleShape).blur(30.dp))
+                }
+                Box(modifier = Modifier.offset(x = 0.dp, y = 15.dp).size(baseSize).background(color.copy(alpha = alphaValue), CircleShape).blur(40.dp))
+                Box(modifier = Modifier.offset(x = baseSize * 0.4f, y = 0.dp).size(baseSize * 1.2f).background(color.copy(alpha = alphaValue), CircleShape).blur(40.dp))
+                Box(modifier = Modifier.offset(x = baseSize * 0.9f, y = 20.dp).size(baseSize * 0.8f).background(color.copy(alpha = alphaValue), CircleShape).blur(40.dp))
             }
         }
     }
@@ -518,26 +699,12 @@ fun ModernBlurryClouds(color: Color) {
 fun ModernBlurryRain(color: Color) {
     val isDark = isSystemInDarkTheme()
     val infiniteTransition = rememberInfiniteTransition(label = "rain")
-    val rainY = infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1200f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rainY"
-    )
-
+    val rainY = infiniteTransition.animateFloat(0f, 1200f, animationSpec = infiniteRepeatable(tween(2000, easing = LinearEasing)), label = "rainY")
     Canvas(modifier = Modifier.fillMaxSize()) {
-        repeat(20) { i -> 
+        repeat(30) { i -> 
             val startX = (i * 271.5f) % size.width
             val startY = (rainY.value + i * 220f) % size.height
-            drawLine(
-                color = color.copy(alpha = if (isDark) 0.25f else 0.5f),
-                start = Offset(startX, startY),
-                end = Offset(startX, startY + 18f),
-                strokeWidth = 1.dp.toPx()
-            )
+            drawLine(color.copy(alpha = if (isDark) 0.35f else 0.6f), Offset(startX, startY), Offset(startX, startY + 28f), 2.5.dp.toPx())
         }
     }
 }
@@ -545,57 +712,25 @@ fun ModernBlurryRain(color: Color) {
 @Composable
 fun ModernBlurrySnow() {
     val isDark = isSystemInDarkTheme()
-    val primaryColor = MaterialTheme.colorScheme.primary
     val infiniteTransition = rememberInfiniteTransition(label = "snow")
-    val snowProgress = infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(30000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "snowProgress"
-    )
-
+    val snowProgress = infiniteTransition.animateFloat(0f, 1f, animationSpec = infiniteRepeatable(tween(30000, easing = LinearEasing)), label = "snow")
+    val color = if (isDark) Color.White else MaterialTheme.colorScheme.primary
     Canvas(modifier = Modifier.fillMaxSize()) {
-        repeat(12) { i -> 
-            val speedSeed = 0.6f + (i % 3) * 0.1f
+        repeat(20) { i -> 
+            val speed = 0.6f + (i % 3) * 0.1f
             val x = (i * 357.5f) % size.width
-            val y = (snowProgress.value * size.height * speedSeed + i * 350f) % size.height
-            val color = if (isDark) Color.White else primaryColor
-            drawCircle(
-                color = color.copy(alpha = if (isDark) 0.3f else 0.5f),
-                radius = 1.5.dp.toPx(),
-                center = Offset(x, y)
-            )
+            val y = (snowProgress.value * size.height * speed + i * 350f) % size.height
+            drawCircle(color.copy(alpha = if (isDark) 0.4f else 0.6f), 3.5.dp.toPx(), Offset(x, y))
         }
     }
 }
 
 @Composable
 fun ModernBlurryStorm(color: Color) {
-    val infiniteTransition = rememberInfiniteTransition(label = "storm")
-    val flash = infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = keyframes {
-                durationMillis = 15000 
-                0f at 0
-                0f at 14000
-                1f at 14050
-                0f at 14150
-                1f at 14200
-                0f at 14400
-            },
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "flash"
-    )
-
-    Box(modifier = Modifier.fillMaxSize()) {
+    val flash by rememberInfiniteTransition(label = "storm").animateFloat(0f, 1f, animationSpec = infiniteRepeatable(keyframes { durationMillis = 15000; 0f at 0; 0f at 14000; 1f at 14050; 0f at 14150; 1f at 14200; 0f at 14400 }), label = "flash")
+    Box(modifier = Modifier.fillMaxSize()) { 
         ModernBlurryRain(color)
-        Box(modifier = Modifier.fillMaxSize().background(Color.White.copy(alpha = flash.value * 0.05f)))
+        Box(modifier = Modifier.fillMaxSize().background(Color.White.copy(alpha = flash * 0.05f))) 
     }
 }
 
@@ -603,53 +738,84 @@ fun ModernBlurryStorm(color: Color) {
 // UI COMPONENTS
 // ============================================================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WeatherApp(viewModel: WeatherViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsState()
     val searchSuggestions by viewModel.searchSuggestions.collectAsState()
+    val favorites by viewModel.favorites.collectAsState()
+    val currentLocationName by viewModel.currentLocationName.collectAsState()
+    val isLocating by viewModel.isLocating.collectAsState()
     var showCityDialog by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
+            if (viewModel.isLocationEnabled()) {
+                viewModel.fetchCurrentLocationWeather()
+            } else {
+                viewModel.showLocationDisabledError()
+            }
+        }
+    }
 
     SeleneWeatherTheme {
         val currentCondition = (uiState as? WeatherUiState.Success)?.condition ?: "Unknown"
         val isDay = (uiState as? WeatherUiState.Success)?.isDay ?: true
         val localTime = (uiState as? WeatherUiState.Success)?.localTime ?: ""
         
-        Box(modifier = Modifier.fillMaxSize()) {
-            // Background is drawn outside Scaffold or without padding to be edge-to-edge
-            WeatherBackground(condition = currentCondition, isDay = isDay, localTime = localTime)
-            
-            Scaffold(
-                modifier = Modifier.fillMaxSize(),
-                containerColor = Color.Transparent
-            ) { padding ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                ) {
-                    when (val state = uiState) {
-                        is WeatherUiState.Loading -> LoadingScreen()
-                        is WeatherUiState.Error -> ErrorScreen(
-                            message = state.message,
-                            onRetry = { viewModel.loadWeather() }
-                        )
-                        is WeatherUiState.Success -> WeatherContent(
-                            weather = state,
-                            onCityClick = { showCityDialog = true }
-                        )
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                WeatherBackground(condition = currentCondition, isDay = isDay, localTime = localTime)
+                
+                Scaffold(
+                    modifier = Modifier.fillMaxSize(), 
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onBackground
+                ) { padding ->
+                    Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+                        CityHeader(city = currentLocationName, onClick = { showCityDialog = true })
+
+                        val pullRefreshState = rememberPullToRefreshState()
+                        PullToRefreshBox(
+                            isRefreshing = uiState is WeatherUiState.Loading || isLocating,
+                            onRefresh = { viewModel.loadWeather() },
+                            state = pullRefreshState,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            when (val state = uiState) {
+                                is WeatherUiState.Loading -> LoadingScreen()
+                                is WeatherUiState.Error -> ErrorScreen(
+                                    message = state.message, 
+                                    onRetry = { viewModel.loadWeather() },
+                                    onReset = { viewModel.resetToDefault() }
+                                )
+                                is WeatherUiState.Success -> WeatherContent(weather = state)
+                            }
+                        }
                     }
 
                     if (showCityDialog) {
                         CityDialog(
                             suggestions = searchSuggestions,
+                            favorites = favorites,
                             onSearch = { viewModel.searchCity(it) },
-                            onDismiss = { 
-                                showCityDialog = false
-                                viewModel.searchCity("") 
-                            },
-                            onConfirm = { newCity ->
-                                viewModel.updateCity(newCity)
-                                showCityDialog = false
+                            onDismiss = { showCityDialog = false; viewModel.searchCity("") },
+                            onConfirm = { id -> viewModel.updateCity(id); showCityDialog = false },
+                            onToggleFavorite = { viewModel.toggleFavorite(it) },
+                            onCurrentLocation = {
+                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                                    if (viewModel.isLocationEnabled()) {
+                                        viewModel.fetchCurrentLocationWeather()
+                                        showCityDialog = false
+                                    } else {
+                                        val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                                        context.startActivity(intent)
+                                        showCityDialog = false
+                                    }
+                                } else {
+                                    permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                                }
                             }
                         )
                     }
@@ -660,73 +826,68 @@ fun WeatherApp(viewModel: WeatherViewModel = viewModel()) {
 }
 
 @Composable
-fun WeatherContent(
-    weather: WeatherUiState.Success,
-    onCityClick: () -> Unit
-) {
+fun LoadingScreen() { Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
+
+@Composable
+fun ErrorScreen(message: String, onRetry: () -> Unit, onReset: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp), 
+        horizontalAlignment = Alignment.CenterHorizontally, 
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Rounded.Warning, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.error)
+        Spacer(Modifier.height(16.dp))
+        Text(message, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+        
+        Button(onRetry, modifier = Modifier.padding(top = 32.dp), shape = CircleShape) {
+            Text("Try Again")
+        }
+        
+        TextButton(onClick = onReset, modifier = Modifier.padding(top = 8.dp)) {
+            Text("Reset to Default Location")
+        }
+    }
+}
+
+@Composable
+fun WeatherContent(weather: WeatherUiState.Success) {
+    val scrollState = rememberScrollState()
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 24.dp)
+            .verticalScroll(scrollState)
     ) {
-        CityHeader(
-            city = weather.city,
-            onClick = onCityClick
-        )
-
-        Spacer(modifier = Modifier.height(40.dp))
+        Spacer(Modifier.height(16.dp))
+        CurrentWeatherDisplay(weather)
+        Spacer(Modifier.height(32.dp))
         
-        CurrentWeatherDisplay(weather = weather)
-
-        Spacer(modifier = Modifier.weight(1f))
+        WeatherDetailsGrid(weather)
+        Spacer(Modifier.height(24.dp))
         
-        WeatherDetailsGrid(weather = weather)
+        HourlyForecastSection(weather.hourly)
+        Spacer(Modifier.height(24.dp))
         
-        Spacer(modifier = Modifier.height(24.dp))
+        DailyForecastSection(weather.daily)
+        Spacer(Modifier.height(24.dp))
         
-        HourlyForecastSection(hourly = weather.hourly)
+        AdditionalDetailsGrid(weather)
         
-        Spacer(modifier = Modifier.height(40.dp))
+        Spacer(Modifier.height(20.dp))
+        Text(weather.lastUpdated, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+        Spacer(Modifier.height(40.dp))
     }
 }
 
 @Composable
 fun CityHeader(city: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Surface(
-            onClick = onClick,
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-            tonalElevation = 2.dp
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.LocationOn,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = city,
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                )
-                Icon(
-                    imageVector = Icons.Rounded.KeyboardArrowDown,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                )
+    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
+        Surface(onClick = onClick, shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f), tonalElevation = 2.dp) {
+            Row(modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.LocationOn, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(8.dp))
+                Text(city, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant))
+                Icon(Icons.Rounded.KeyboardArrowDown, null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
             }
         }
     }
@@ -734,81 +895,66 @@ fun CityHeader(city: String, onClick: () -> Unit) {
 
 @Composable
 fun CurrentWeatherDisplay(weather: WeatherUiState.Success) {
-    val textColor = MaterialTheme.colorScheme.onBackground
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = weather.condition,
-            style = MaterialTheme.typography.headlineSmall.copy(
-                fontWeight = FontWeight.Medium,
-                color = textColor.copy(alpha = 0.9f)
-            )
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Text(
-            text = "${weather.currentTemp.toInt()}°",
-            style = MaterialTheme.typography.displayLarge.copy(
-                fontSize = 120.sp,
-                fontWeight = FontWeight.Thin,
-                color = textColor,
-                textAlign = TextAlign.Center
-            )
-        )
-
-        Text(
-            text = "Feels like ${weather.feelsLike.toInt()}°",
-            style = MaterialTheme.typography.titleMedium.copy(
-                color = textColor.copy(alpha = 0.8f)
-            )
-        )
-
-        Row(
-            modifier = Modifier.padding(top = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(24.dp)
-        ) {
-            TemperaturePill(label = "H", value = weather.high.toInt())
-            TemperaturePill(label = "L", value = weather.low.toInt())
+    val textStyle = MaterialTheme.colorScheme.onBackground
+    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(weather.condition, style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Medium, color = textStyle.copy(alpha = 0.9f)))
+        Spacer(Modifier.height(12.dp))
+        Text("${weather.currentTemp.toInt()}°", style = MaterialTheme.typography.displayLarge.copy(fontSize = 120.sp, fontWeight = FontWeight.Thin, color = textStyle))
+        Text("Feels like ${weather.feelsLike.toInt()}°", style = MaterialTheme.typography.titleMedium.copy(color = textStyle.copy(alpha = 0.8f)))
+        Row(modifier = Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            TemperaturePill("H", weather.high.toInt())
+            TemperaturePill("L", weather.low.toInt())
         }
     }
 }
 
 @Composable
 fun TemperaturePill(label: String, value: Int) {
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-    ) {
-        Text(
-            text = "$label: $value°",
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-            color = MaterialTheme.colorScheme.onBackground,
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.Medium
-        )
+    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)) {
+        Text("$label: $value°", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
     }
 }
 
 @Composable
 fun WeatherDetailsGrid(weather: WeatherUiState.Success) {
+    Surface(shape = RoundedCornerShape(32.dp), color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f), modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(24.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            DetailItem(Icons.Rounded.WaterDrop, "Humidity", "${weather.humidity.toInt()}%")
+            DetailItem(Icons.Rounded.Air, "Wind", "${weather.windSpeed.toInt()} km/h")
+            DetailItem(Icons.Rounded.Compress, "Pressure", "${weather.pressure.toInt()} hPa")
+        }
+    }
+}
+
+@Composable
+fun AdditionalDetailsGrid(weather: WeatherUiState.Success) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            DetailCard(Modifier.weight(1f), Icons.Rounded.LightMode, "UV Index", String.format(Locale.getDefault(), "%.1f", weather.uvIndex))
+            DetailCard(Modifier.weight(1f), Icons.Rounded.Visibility, "Visibility", "${weather.visibility.toInt()} km")
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            DetailCard(Modifier.weight(1f), Icons.Rounded.WbTwilight, "Sunrise", weather.sunrise)
+            DetailCard(Modifier.weight(1f), Icons.Rounded.WbTwilight, "Sunset", weather.sunset)
+        }
+    }
+}
+
+@Composable
+fun DetailCard(modifier: Modifier = Modifier, icon: ImageVector, label: String, value: String) {
     Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f),
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier,
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f)
     ) {
-        Row(
-            modifier = Modifier
-                .padding(28.dp)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            DetailItem(icon = Icons.Rounded.WaterDrop, label = "Humidity", value = "${weather.humidity.toInt()}%")
-            DetailItem(icon = Icons.Rounded.Air, label = "Wind", value = "${weather.windSpeed.toInt()} km/h")
-            DetailItem(icon = Icons.Rounded.Compress, label = "Pressure", value = "${weather.pressure.toInt()} hPa")
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -816,69 +962,29 @@ fun WeatherDetailsGrid(weather: WeatherUiState.Success) {
 @Composable
 fun DetailItem(icon: ImageVector, label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(
-            imageVector = icon, 
-            contentDescription = null, 
-            tint = MaterialTheme.colorScheme.primary, 
-            modifier = Modifier.size(32.dp)
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(
-            text = value, 
-            color = MaterialTheme.colorScheme.onSurface, 
-            fontWeight = FontWeight.Bold, 
-            style = MaterialTheme.typography.bodyLarge
-        )
-        Text(
-            text = label, 
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), 
-            style = MaterialTheme.typography.labelSmall
-        )
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+        Spacer(Modifier.height(10.dp))
+        Text(value, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+        Text(label, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
     }
 }
 
 @Composable
 fun HourlyForecastSection(hourly: List<HourlyForecast>) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = "Next 24 Hours",
-            style = MaterialTheme.typography.titleMedium.copy(
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            ),
-            modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
-        )
-
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(48.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f)
-        ) {
-            LazyRow(
-                modifier = Modifier.padding(vertical = 24.dp),
-                contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
+    Column(Modifier.fillMaxWidth()) {
+        Text("Hourly Forecast", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(start = 4.dp, bottom = 12.dp))
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(32.dp), color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f)) {
+            LazyRow(modifier = Modifier.padding(vertical = 20.dp), contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                 items(hourly) { hour ->
-                    Column(
-                        modifier = Modifier
-                            .width(72.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = hour.time, 
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(text = getWeatherEmoji(hour.weatherCode), fontSize = 32.sp)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "${hour.temp.toInt()}°", 
-                            color = MaterialTheme.colorScheme.onSurface, 
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                    Column(modifier = Modifier.width(64.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(hour.time, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f), style = MaterialTheme.typography.labelMedium)
+                        Spacer(Modifier.height(8.dp))
+                        Text(getWeatherEmoji(hour.weatherCode, hour.isDay), fontSize = 28.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text("${hour.temp.toInt()}°", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        if (hour.humidity != null) {
+                            Text("${hour.humidity}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
+                        }
                     }
                 }
             }
@@ -886,9 +992,40 @@ fun HourlyForecastSection(hourly: List<HourlyForecast>) {
     }
 }
 
-fun getWeatherEmoji(code: Int): String = when (code) {
-    0 -> "☀️"
-    1, 2, 3 -> "⛅"
+@Composable
+fun DailyForecastSection(daily: List<DailyForecast>) {
+    Column(Modifier.fillMaxWidth()) {
+        Text("7-Day Forecast", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(start = 4.dp, bottom = 12.dp))
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(32.dp), color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                daily.forEachIndexed { index, forecast ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(forecast.dayOfWeek, modifier = Modifier.width(60.dp), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                        Text(getWeatherEmoji(forecast.weatherCode, true), fontSize = 24.sp)
+                        Row(modifier = Modifier.width(100.dp), horizontalArrangement = Arrangement.End) {
+                            Text("${forecast.maxTemp.toInt()}°", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(12.dp))
+                            Text("${forecast.minTemp.toInt()}°", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                    }
+                    if (index < daily.lastIndex) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun getWeatherEmoji(code: Int, isDay: Boolean = true): String = when (code) {
+    0 -> if (isDay) "☀️" else "🌙"
+    1, 2, 3 -> if (isDay) "⛅" else "☁️"
     45, 48 -> "🌫️"
     51, 53, 55 -> "🌦️"
     61, 63, 65 -> "🌧️"
@@ -898,84 +1035,103 @@ fun getWeatherEmoji(code: Int): String = when (code) {
 }
 
 @Composable
-fun LoadingScreen() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
-    }
-}
-
-@Composable
-fun ErrorScreen(message: String, onRetry: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(Icons.Rounded.Warning, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.error)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = message, 
-            color = MaterialTheme.colorScheme.onBackground, 
-            textAlign = TextAlign.Center,
-            style = MaterialTheme.typography.bodyLarge
-        )
-        Button(
-            onClick = onRetry, 
-            modifier = Modifier.padding(top = 32.dp),
-            shape = CircleShape
-        ) {
-            Text("Try Again")
-        }
-    }
-}
-
-@Composable
 fun CityDialog(
     suggestions: List<GeocodeResult>,
+    favorites: Set<String>,
     onSearch: (String) -> Unit,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onConfirm: (String) -> Unit,
+    onToggleFavorite: (String) -> Unit,
+    onCurrentLocation: () -> Unit
 ) {
     var text by remember { mutableStateOf("") }
-
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Search Location", fontWeight = FontWeight.Bold) },
+        title = { Text("Locations", fontWeight = FontWeight.Bold) },
         text = {
             Column {
                 TextField(
-                    value = text,
-                    onValueChange = { 
-                        text = it
-                        onSearch(it)
-                    },
-                    placeholder = { Text("Search city...") },
-                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                    singleLine = true,
-                    shape = CircleShape,
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
+                    value = text, 
+                    onValueChange = { text = it; onSearch(it) }, 
+                    placeholder = { Text("Search city...") }, 
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) }, 
+                    trailingIcon = { if (text.isNotEmpty()) IconButton(onClick = { text = ""; onSearch("") }) { Icon(Icons.Rounded.Close, null) } }, 
+                    singleLine = true, 
+                    shape = CircleShape, 
+                    colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent), 
                     modifier = Modifier.fillMaxWidth()
                 )
+                
+                Spacer(Modifier.height(8.dp))
+                
+                TextButton(
+                    onClick = onCurrentLocation,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Start, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.MyLocation, null)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Use Current Location", style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
 
-                if (suggestions.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
-                        shape = RoundedCornerShape(28.dp),
-                        tonalElevation = 6.dp,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh
-                    ) {
-                        LazyColumn {
-                            items(suggestions) { result ->
-                                ListItem(
-                                    headlineContent = { Text(result.name, fontWeight = FontWeight.Bold) },
-                                    supportingContent = { Text("${result.admin1 ?: ""}, ${result.country ?: ""}") },
-                                    modifier = Modifier.clickable { onConfirm(result.name) },
-                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                                )
+                Spacer(Modifier.height(8.dp))
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp), 
+                    shape = RoundedCornerShape(28.dp), 
+                    tonalElevation = 6.dp, 
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                ) {
+                    LazyColumn(modifier = Modifier.padding(vertical = 8.dp)) {
+                        if (text.isEmpty()) {
+                            if (favorites.isNotEmpty()) {
+                                item { 
+                                    Text("Favorites", Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) 
+                                }
+                                items(favorites.toList()) { id ->
+                                    val parts = id.split("|")
+                                    val name = parts.getOrNull(0) ?: id
+                                    val sub = parts.getOrNull(2) ?: ""
+                                    ListItem(
+                                        headlineContent = { Text(name, fontWeight = FontWeight.SemiBold) }, 
+                                        supportingContent = { if (sub.isNotEmpty()) Text(sub) }, 
+                                        leadingContent = { Icon(Icons.Rounded.Star, null, tint = Color(0xFFFFD700)) }, 
+                                        trailingContent = { IconButton(onClick = { onToggleFavorite(id) }) { Icon(Icons.Rounded.Delete, null, tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)) } }, 
+                                        modifier = Modifier.clickable { onConfirm(id) }, 
+                                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                    )
+                                }
+                            } else { 
+                                item { 
+                                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { 
+                                        Text("No favorites yet", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) 
+                                    } 
+                                } 
+                            }
+                        } else {
+                            if (suggestions.isNotEmpty()) {
+                                items(suggestions) { result ->
+                                    val isFav = favorites.contains(result.uniqueId)
+                                    ListItem(
+                                        headlineContent = { Text(result.name, fontWeight = FontWeight.Bold) }, 
+                                        supportingContent = { Text("${result.admin1 ?: ""}, ${result.country ?: ""}") }, 
+                                        trailingContent = { 
+                                            IconButton(onClick = { onToggleFavorite(result.uniqueId) }) { 
+                                                Icon(if (isFav) Icons.Rounded.Star else Icons.Rounded.StarOutline, null, tint = if (isFav) Color(0xFFFFD700) else MaterialTheme.colorScheme.onSurfaceVariant) 
+                                            } 
+                                        }, 
+                                        modifier = Modifier.clickable { onConfirm(result.uniqueId) }, 
+                                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                    )
+                                }
+                            } else { 
+                                item { 
+                                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { 
+                                        Text("Searching...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) 
+                                    } 
+                                } 
                             }
                         }
                     }
@@ -983,9 +1139,7 @@ fun CityDialog(
             }
         },
         confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
+        dismissButton = { TextButton(onDismiss) { Text("Cancel") } },
         shape = RoundedCornerShape(28.dp)
     )
 }
@@ -994,8 +1148,16 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContent {
-            WeatherApp()
+        setContent { WeatherApp() }
+    }
+}
+
+suspend fun <T> Task<T>.await(): T? = suspendCancellableCoroutine { continuation ->
+    addOnCompleteListener { task ->
+        if (task.isSuccessful) {
+            continuation.resume(task.result)
+        } else {
+            continuation.resumeWithException(task.exception ?: Exception("Task failed"))
         }
     }
 }

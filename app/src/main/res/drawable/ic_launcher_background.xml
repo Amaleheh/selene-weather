@@ -6,7 +6,7 @@
     android:viewportHeight="108">
     <path
         android:pathData="M0,0h108v108h-108z"
-        android:fillColor="#4A90E2"/>
+        android:fillColor="#005AC1"/>
     <path
         android:pathData="M0,0h108v108h-108z">
         <gradient
@@ -15,8 +15,8 @@
             android:endY="108"
             android:endX="54"
             android:type="linear">
-            <item android:offset="0" android:color="#56CCF2"/>
-            <item android:offset="1" android:color="#2F80ED"/>
+            <item android:offset="0" android:color="#4791FF"/>
+            <item android:offset="1" android:color="#005AC1"/>
         </gradient>
     </path>
 </vector>

@@ -91,7 +91,11 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.1")
     implementation(libs.core.ktx)
+
+    // Google Play Services Location
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 
     // Testing
     testImplementation(libs.junit)
