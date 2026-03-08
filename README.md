@@ -7,11 +7,12 @@
          '  '  '
         '  '  '
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-<div style="display: flex; overflow-x: auto; gap: 10px; padding-bottom: 10px;">
+<div style="display: flex; flex-direction: row; overflow-x: auto; white-space: nowrap; gap: 10px; padding-bottom: 10px;">
   <img src="https://github.com/user-attachments/assets/33423078-3564-494f-935f-e2a54c1ddbc4" height="400" alt="1000089100" />
-  <img width="1024" height="2284" alt="1000089112" src="https://github.com/user-attachments/assets/fec75e1a-2a33-4693-bfaf-6e0d671b44cf" height="400" alt="1000089102"/>
+  <img src="https://github.com/user-attachments/assets/fec75e1a-2a33-4693-bfaf-6e0d671b44cf" height="400" alt="1000089112" />
   <img src="https://github.com/user-attachments/assets/62947fa8-fd0e-4895-b767-6de56f674ecc" height="400" alt="1000089101" />
 </div>
+
 
 
 **Selene Weather** is a simple, clean weather app. I built this project to practice my coding skills and create something functional yet easy on the eyes.
